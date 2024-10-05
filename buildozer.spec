@@ -42,8 +42,7 @@ version = 0.1
 android.ndk = 25b
 
 # (str) Android SDK version to use
-android.sdk = 24
-
+android.sdk = 31
 # (str) Android entry point
 android.entrypoint = org.kivy.android.PythonActivity
 
