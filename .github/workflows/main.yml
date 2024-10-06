@@ -1,70 +1,94 @@
-name: Build Kivy APK
-
+name: Production Builds
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "Release-Build"
+        default: "Generate release build"
+      testers:
+        type: choice
+        description: "Select testers"
+        options:
+          - android
+          - internalTesters
+          - everyone
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checking out branch
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.8'
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: 17
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install kivy buildozer cython
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2.0.10
 
-    - name: Set up Java
-      uses: actions/setup-java@v3
-      with:
-        java-version: '8'
-        distribution: 'adopt'
+      # This will decode the keystore from base 64 text representation that we have stored in secrets
+      # and generates and keystore file and gets stored in /android-app path
+      - name: Decode Keystore
+        env:
+          ENCODED_STRING: ${{ secrets.KEYSTORE_BASE_64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEYSTORE_ALIAS: ${{ secrets.RELEASE_KEYSTORE_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
-    - name: Install Android SDK
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y openjdk-8-jdk
-        wget https://dl.google.com/android/repository/commandlinetools-linux-6858069_latest.zip
-        mkdir -p $HOME/android-sdk/cmdline-tools
-        unzip commandlinetools-linux-6858069_latest.zip -d $HOME/android-sdk/cmdline-tools
-        mkdir -p $HOME/android-sdk/cmdline-tools/latest
-        mv $HOME/android-sdk/cmdline-tools/cmdline-tools/* $HOME/android-sdk/cmdline-tools/latest/
-        echo ">>===== creating sdkmanager script =====================================<<"
-        echo "`realpath $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager` --sdk_root=`realpath $HOME/android-sdk` \$*" | tee sdkmanager
-        chmod +x sdkmanager; 
-        sudo ln -s $HOME/android-sdk/cmdline-tools/latest  $HOME/android-sdk/tools
-        echo -e "y\ny\ny\ny\ny\ny\ny" > input.txt
-        sudo cp sdkmanager /usr/bin; 
-        echo ">>===== testing sdkmanager script =====================================<<"
-        sudo sdkmanager --licenses < input.txt
+        run: |
+          echo $ENCODED_STRING > keystore-b64.txt
+          base64 -d keystore-b64.txt > keystore.jks
 
-        
-    - name: Build the APK
-      run: |
-        python -m pip install --upgrade pip
-        pip install kivy buildozer cython
-        sed -i 's/# (str) Title of the application/(str) Title of the application/' buildozer.spec
-        sed -i 's/# (str) Package name/(str) Package name/' buildozer.spec
-        sed -i 's/# (str) Source code where the main.py live/(str) Source code where the main.py live/' buildozer.spec
-        sed -i 's/# (list) Application requirements/(list) Application requirements/' buildozer.spec
-        sed -i 's/# (str) Supported orientation/(str) Supported orientation/' buildozer.spec
-        sed -i 's/# (list) Permissions/(list) Permissions/' buildozer.spec
-        buildozer -v android debug
+      - name: Build Release apk
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEYSTORE_ALIAS: ${{ secrets.RELEASE_KEYSTORE_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --stacktrace
 
-    - name: Archive APK
-      uses: actions/upload-artifact@v3
-      with:
-        name: kivy-app
-        path: bin/*.apk
+      - name: Build Release bundle
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEYSTORE_ALIAS: ${{ secrets.RELEASE_KEYSTORE_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew bundleRelease --stacktrace
+
+      - name: Get release file aab path
+        id: releaseAab
+        run: echo "aabfile=$(find app/build/outputs/bundle/release/*.aab)" >> $GITHUB_OUTPUT
+
+      - name: Get release file apk path
+        id: releaseApk
+        run: echo "apkfile=$(find app/build/outputs/apk/release/*.apk)" >> $GITHUB_OUTPUT
+
+      - name: Zip Files
+        uses: papeloto/action-zip@v1
+        with:
+          files: ${{ steps.releaseAab.outputs.aabfile }} ${{ steps.releaseApk.outputs.apkfile }}
+          dest: ${{ steps.releaseApk.outputs.apkfile }}.zip
+
+#      - name: Sending release build to Slack
+#        uses: MeilCli/slack-upload-file@v3
+#        with:
+#          slack_token: ${{ secrets.SLACK_BOT_TOKEN }}
+#          file_path: ${{ steps.releaseApk.outputs.apkfile }}.zip
+#          channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
+#          initial_comment: "Release build is now available."
+#
+#      - name: upload apk to Firebase App Distribution
+#        uses: wzieba/Firebase-Distribution-Github-Action@v1
+#        with:
+#          appId: ${{secrets.FIREBASE_APP_ID_RELEASE}}
+#          serviceCredentialsFileContent: ${{ secrets.SERVICE_CREDENTIALS_FILE_RELEASE }}
+#          groups: ${{ github.event.inputs.testers }}
+#          file: ${{ steps.releaseApk.outputs.apkfile }}
+
+      - name: Upload Release Build to Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+           name: release-artifacts
+           path: ${{ steps.releaseApk.outputs.apkfile }}
